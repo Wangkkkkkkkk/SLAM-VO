@@ -135,6 +135,7 @@ Point2d pixel2cam ( const Point2d& p, const Mat& K ){
 
 void bundleAdjustment( const vector< Point3f > points_3d, const vector< Point2f > points_2d, Mat& K, Mat& R, Mat& t ){
     // 初始化g2o
+
     // 每个误差项优化变量维度为6，误差值维度为3
     typedef g2o::BlockSolver< g2o::BlockSolverTraits< 6, 3 > > Block;
     // 第一步：创建一个线性求解器 LinearSolver
@@ -146,14 +147,23 @@ void bundleAdjustment( const vector< Point3f > points_3d, const vector< Point2f 
     g2o::SparseOptimizer optimizer;  // 稀疏 优化模型
     optimizer.setAlgorithm( solver ); // 设置求解器
 
-    // vertex
+    // vertex  图结构的顶点
+    // 定义顶点，只有一个顶点就是相机pose
+    // VertexSE3Expmap : public BaseVertex<6, SE3Quat>
+    // （1）6是指李代数的维数（3维旋转，3维平移，据书中所述，g2o是旋转在前，平移在后）
+    // （2）SE3Quat：这个是g2o中定义的相机位姿的类
     g2o::VertexSE3Expmap* pose = new g2o::VertexSE3Expmap();
+    // 定义旋转向量的3d矩阵
     Eigen::Matrix3d R_mat;
     R_mat <<
         R.at<double>(0, 0), R.at<double>(0, 1), R.at<double>(0, 2),
         R.at<double>(1, 0), R.at<double>(1, 1), R.at<double>(1, 2),
         R.at<double>(2, 0), R.at<double>(2, 1), R.at<double>(2, 2);
+    
+    // 定义顶点的节点编号
     pose->setId(0);
+
+    // 设定初始值（迭代初始值）
     pose->setEstimate( g2o::SE3Quat(
         R_mat,
         Eigen::Vector3d( t.at<double>(0, 0), t.at<double>(1,0), t.at<double>(2, 0))
@@ -162,6 +172,8 @@ void bundleAdjustment( const vector< Point3f > points_3d, const vector< Point2f 
 
     int index = 1;
     for( const Point3f p : points_3d) {
+        // VertexSBAPointXYZ : public BaseVertex<3, Vector3D>
+        // 传入参数类型就是常用的Eigen的Vector3d，对应空间中的x、y、z三个坐标
         g2o::VertexSBAPointXYZ* point = new g2o::VertexSBAPointXYZ();
         point->setId( index++ );
         point->setEstimate( Eigen::Vector3d(p.x, p.y, p.z));
@@ -169,8 +181,10 @@ void bundleAdjustment( const vector< Point3f > points_3d, const vector< Point2f 
         optimizer.addVertex( point );
     }
 
-    // parameter: camera intrinsics
+    // parameter: camera intrinsics  相机内参
+    // CameraParameters(double focal_length, const Vector2D & principle_point, double baseline)
     g2o::CameraParameters* camera = new g2o::CameraParameters(
+        // Mat类中的at方法作用：用于获取图像矩阵某点的值或改变某点的值。
         K.at<double>(0, 0), Eigen::Vector2d(K.at<double>(0, 2), K.at<double>(1, 2)), 0
     );
     camera->setId(0);
@@ -179,12 +193,23 @@ void bundleAdjustment( const vector< Point3f > points_3d, const vector< Point2f 
     // edges
     index = 1;
     for(const Point2f p:points_2d){
+        // EdgeProjectXYZ2UV : public  BaseBinaryEdge<2, Vector2D, VertexSBAPointXYZ, VertexSE3Expmap>
+        // 根据观测方程e=z-Kexp(\xi^{\wedge})P，e的单位应该是一个像素，是一个Eigen::Vector2d类型的变量，因此传入误差维度2以及误差类型Eigen::Vector2d；
+        //（2）传入的VertexSBAPointXYZ和VertexSE3Expmap就是上述的空间点位置和李代数位姿
         g2o::EdgeProjectXYZ2UV* edge = new g2o::EdgeProjectXYZ2UV();
         edge->setId( index );
+        // dynamic_cast < type-id > ( expression)
+        // 该运算符把expression转换成type-id类型的对象
+        // 设定链接的顶点，这里是一元边，所以一条边只链接一个顶点，而且整个图也就一个顶点
         edge->setVertex(0, dynamic_cast< g2o::VertexSBAPointXYZ* >(optimizer.vertex(index)));
         edge->setVertex(1, pose);
+        // 设定测量值，也就是第一组2d点
         edge->setMeasurement( Eigen::Vector2d(p.x, p.y));
+        
+        // 第二个参数是优化器内添加的参数的id。
+        // 当你调用addEdge来添加这条边时，会根据第二个参数的id，把相应的参数地址给边，以后边内的成员函数，就根据第一个参数，拿到这个地址。
         edge->setParameterId(0, 0);
+        // 设置信息矩阵
         edge->setInformation( Eigen::Matrix2d::Identity() );
         optimizer.addEdge(edge);
         index++;
